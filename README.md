@@ -5,4 +5,4 @@ So far, the gradient updates are asynchronous: I need to find a way to perform s
 Some hardcoded hyper-parameters can still be found.
 
 ## Acknowledgments
-The structur of this code is based on https://github.com/ikostrikov/pytorch-a3c.
+The structure of this code is based on https://github.com/ikostrikov/pytorch-a3c.
