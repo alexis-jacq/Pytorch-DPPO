@@ -8,8 +8,9 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
+import torch.multiprocessing as mp
 
-from models import Policy, Value
+from model import Policy, Value
 
 class ReplayMemory(object):
     def __init__(self, capacity):
@@ -29,7 +30,7 @@ class ReplayMemory(object):
 def ensure_shared_grads(model, shared_model):
     for param, shared_param in zip(model.parameters(), shared_model.parameters()):
         if shared_param.grad is not None:
-            return
+            pass
         shared_param._grad = param.grad
 
 def normal(x, mu, sigma_sq):
@@ -37,7 +38,7 @@ def normal(x, mu, sigma_sq):
     b = 1/(2*sigma_sq*np.pi).sqrt()
     return a*b
 
-def train(rank, params, shared_p, shared_v, optimizer_p, optimizer_v):
+def train(rank, params, traffic_light, counter, lock, shared_p, shared_v, optimizer_p, optimizer_v):
     torch.manual_seed(params.seed + rank)
     env = gym.make(params.env_name)
     num_inputs = env.observation_space.shape[0]
@@ -45,8 +46,7 @@ def train(rank, params, shared_p, shared_v, optimizer_p, optimizer_v):
     policy = Policy(num_inputs, num_outputs)
     value = Value(num_inputs)
 
-    memory = ReplayMemory(1e6)
-    batch_size = 10000
+    memory = ReplayMemory(params.batch_size)
 
     state = env.reset()
     state = Variable(torch.Tensor(state).unsqueeze(0))
@@ -59,7 +59,7 @@ def train(rank, params, shared_p, shared_v, optimizer_p, optimizer_v):
         value.load_state_dict(shared_v.state_dict())
 
         w = -1
-        while w < batch_size:
+        while w < params.batch_size:
             states = []
             actions = []
             rewards = []
@@ -112,46 +112,71 @@ def train(rank, params, shared_p, shared_v, optimizer_p, optimizer_v):
             # store usefull info:
             memory.push([states, actions, returns, advantages])
 
-        batch_states, batch_actions, batch_returns, batch_advantages = memory.sample(batch_size)
+        batch_states, batch_actions, batch_returns, batch_advantages = memory.sample(params.batch_size)
 
         # policy grad updates:
-        mu_old, sigma_sq_old = policy(batch_states)
+        policy_old = Policy(num_inputs, num_outputs)
+        policy_old.load_state_dict(shared_p.state_dict())
+        mu_old, sigma_sq_old = policy_old(batch_states)
         probs_old = normal(batch_actions, mu_old, sigma_sq_old)
-        policy_new = Policy(num_inputs, num_outputs)
         kl = 0.
         kl_coef = 1.
         kl_target = Variable(torch.Tensor([params.kl_target]))
         for m in range(100):
-            policy_new.load_state_dict(shared_p.state_dict())
-            mu_new, sigma_sq_new = policy_new(batch_states)
-            probs_new = normal(batch_actions, mu_new, sigma_sq_new)
-            policy_loss = torch.mean(batch_advantages * torch.sum(probs_new/probs_old,1))
-            kl = torch.mean(probs_old * torch.log(probs_old/probs_new))
+            policy.load_state_dict(shared_p.state_dict())
+            policy.zero_grad()
+            #shared_p.zero_grad()
+
+            # get initial signal
+            signal_init = traffic_light.get()
+            mu, sigma_sq = policy(batch_states)
+            probs = normal(batch_actions, mu, sigma_sq)
+            policy_loss = torch.mean(batch_advantages * torch.sum(probs/probs_old,1))
+            kl = torch.mean(probs_old * torch.log(probs_old/probs))
             kl_loss = kl_coef * kl + \
                 params.ksi * torch.clamp(kl-2*kl_target, max=0)**2
             total_policy_loss = - policy_loss + kl_loss
-            if kl > 4*kl_target:
+
+            # probably update old_policy before policy update:
+            policy_old.load_state_dict(shared_p.state_dict())
+            mu_old, sigma_sq_old = policy(batch_states.detach())
+            probs_old = normal(batch_actions, mu_old, sigma_sq_old)
+
+            if kl.data[0] > 4*kl_target.data[0]:
                 break
-            # assynchronous update:
-            optimizer_p.zero_grad()
-            total_policy_loss.backward()
-            ensure_shared_grads(policy_new, shared_p)
-            optimizer_p.step()
+
+            total_policy_loss.backward(retain_variables=True)
+            #total_policy_loss.backward()
+            ensure_shared_grads(policy, shared_p)
+            shared_p.cum_grads()
+            counter.increment()
+
+            # wait for a new signal to continue
+            while traffic_light.get() == signal_init:
+                pass
+
 
         # value grad updates:
         for b in range(100):
+            # get initial signal
+            signal_init = traffic_light.get()
+
             value.load_state_dict(shared_v.state_dict())
             v = value(batch_states)
             value_loss = torch.mean((batch_returns - v)**2)
-            # assynchronous update:
-            optimizer_v.zero_grad()
-            value_loss.backward()
-            ensure_shared_grads(value, shared_v)
-            optimizer_v.step()
 
-        if kl > params.beta_hight*kl_target:
+            value_loss.backward(retain_variables=True)
+            ensure_shared_grads(value, shared_v)
+            shared_v.cum_grads()
+            counter.increment()
+
+            # wait for a new signal to continue
+            while traffic_light.get() == signal_init:
+                pass
+
+        if kl.data[0] > params.beta_hight*kl_target.data[0]:
             kl_coef *= params.alpha
-        if kl < params.beta_low*kl_target:
+        if kl.data[0] < params.beta_low*kl_target.data[0]:
             kl_coef /= params.alpha
 
-        print("update done !")
+        print("updates done !")

@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
 
-from models import Policy, Value
+from model import Policy, Value
 
 def test(rank, params, shared_p):
     torch.manual_seed(params.seed + rank)
