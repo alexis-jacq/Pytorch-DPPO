@@ -9,7 +9,7 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model import Policy, Value
+from model import Model
 from train import train
 from test import test
 from chief import chief
@@ -18,20 +18,22 @@ import my_optim
 
 class Params():
     def __init__(self):
-        self.batch_size = 10000
-        self.lr = 1e-4
+        self.batch_size = 64
+        self.lr = 3e-4
         self.gamma = 0.99
-        self.kl_target = 1e-2
-        self.alpha = 1.5
-        self.ksi = 1000
-        self.beta_hight = 1.3
-        self.beta_low = 0.7
+        self.gae_param = 0.95
+        self.clip = 0.2
+        self.ent_coeff = 0.
+        self.num_epoch = 10
+        self.num_steps = 2048
         self.num_processes = 4
-        self.num_steps = 20
         self.update_treshold = self.num_processes - 1
         self.max_episode_length = 10000
         self.seed = 1
-        self.env_name = 'Pendulum-v0'
+        self.env_name = 'InvertedPendulum-v1'
+        #self.env_name = 'Reacher-v1'
+        #self.env_name = 'Pendulum-v0'
+        #self.env_name = 'Hopper-v1'
 
 if __name__ == '__main__':
     os.environ['OMP_NUM_THREADS'] = '1'
@@ -44,22 +46,19 @@ if __name__ == '__main__':
     counter = Counter()
     lock = mp.Lock()
 
-    shared_p = Policy(num_inputs, num_outputs)
-    shared_v = Value(num_inputs)
-    shared_p.share_memory()
-    shared_v.share_memory()
-    optimizer_p = my_optim.SharedAdam(shared_p.parameters(), lr=params.lr)
-    optimizer_v = my_optim.SharedAdam(shared_v.parameters(), lr=params.lr)
+    shared_model = Model(num_inputs, num_outputs)
+    shared_model.share_memory()
+    optimizer = my_optim.SharedAdam(shared_model.parameters(), lr=params.lr)
 
     processes = []
-    p = mp.Process(target=test, args=(params.num_processes, params, shared_p))
+    p = mp.Process(target=test, args=(params.num_processes, params, shared_model))
     p.start()
     processes.append(p)
-    p = mp.Process(target=chief, args=(params.num_processes, params, traffic_light, counter, shared_p, shared_v, optimizer_p, optimizer_v))
+    p = mp.Process(target=chief, args=(params.num_processes, params, traffic_light, counter, shared_model, optimizer))
     p.start()
     processes.append(p)
     for rank in range(0, params.num_processes):
-        p = mp.Process(target=train, args=(rank, params, traffic_light, counter, lock, shared_p, shared_v, optimizer_p, optimizer_v))
+        p = mp.Process(target=train, args=(rank, params, traffic_light, counter, lock, shared_model, optimizer))
         p.start()
         processes.append(p)
     for p in processes:
