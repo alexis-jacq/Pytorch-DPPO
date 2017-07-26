@@ -18,7 +18,7 @@ import my_optim
 
 class Params():
     def __init__(self):
-        self.batch_size = 64
+        self.batch_size = 100
         self.lr = 3e-4
         self.gamma = 0.99
         self.gae_param = 0.95
@@ -26,7 +26,7 @@ class Params():
         self.ent_coeff = 0.
         self.num_epoch = 10
         self.num_steps = 2048
-        self.num_processes = 4
+        self.num_processes = 8
         self.update_treshold = self.num_processes - 1
         self.max_episode_length = 10000
         self.seed = 1
@@ -48,7 +48,7 @@ if __name__ == '__main__':
 
     shared_model = Model(num_inputs, num_outputs)
     shared_model.share_memory()
-    optimizer = my_optim.SharedAdam(shared_model.parameters(), lr=params.lr)
+    optimizer = optim.Adam(shared_model.parameters(), lr=params.lr)
 
     processes = []
     p = mp.Process(target=test, args=(params.num_processes, params, shared_model))
@@ -58,7 +58,7 @@ if __name__ == '__main__':
     p.start()
     processes.append(p)
     for rank in range(0, params.num_processes):
-        p = mp.Process(target=train, args=(rank, params, traffic_light, counter, lock, shared_model, optimizer))
+        p = mp.Process(target=train, args=(rank, params, traffic_light, counter, lock, shared_model))
         p.start()
         processes.append(p)
     for p in processes:

@@ -41,7 +41,7 @@ def normal(x, mu, sigma_sq):
     b = 1/(2*sigma_sq*np.pi).sqrt()
     return a*b
 
-def train(rank, params, traffic_light, counter, lock, shared_model, optimizer):
+def train(rank, params, traffic_light, counter, lock, shared_model):
     torch.manual_seed(params.seed)
     env = gym.make(params.env_name)
     num_inputs = env.observation_space.shape[0]
@@ -156,5 +156,5 @@ def train(rank, params, traffic_light, counter, lock, shared_model, optimizer):
             # wait for a new signal to continue
             while traffic_light.get() == signal_init:
                 pass
-                
+
         memory.clear()
