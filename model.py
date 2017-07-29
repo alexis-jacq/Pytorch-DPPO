@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import torch.multiprocessing as mp
 
-class Model(torch.nn.Module):
+class Model(nn.Module):
     def __init__(self, num_inputs, num_outputs):
         super(Model, self).__init__()
         h_size_1 = 100
@@ -15,40 +15,62 @@ class Model(torch.nn.Module):
         self.v_fc1 = nn.Linear(num_inputs, h_size_1)
         self.v_fc2 = nn.Linear(h_size_1, h_size_2)
         self.mu = nn.Linear(h_size_2, num_outputs)
-        self.sigma_sq = nn.Linear(h_size_2, num_outputs)
+        self.log_std = nn.Parameter(torch.zeros(num_outputs))
         self.v = nn.Linear(h_size_2,1)
-        #self.mu.weight.data.normal_()
-        #self.sigma_sq.weight.data.normal_()
         for name, p in self.named_parameters():
-            self.register_buffer(name+'_grad', torch.zeros(p.size()))
+            # init parameters
+            if 'bias' in name:
+                p.data.fill_(0)
+            '''
+            if 'mu.weight' in name:
+                p.data.normal_()
+                p.data /= torch.sum(p.data**2,0).expand_as(p.data)'''
+        # mode
         self.train()
 
     def forward(self, inputs):
+        # actor
         x = F.tanh(self.p_fc1(inputs))
         x = F.tanh(self.p_fc2(x))
         mu = self.mu(x)
-        sigma_sq = F.softplus(self.sigma_sq(x))
+        log_std = torch.exp(self.log_std).unsqueeze(0).expand_as(mu)
+        # critic
         x = F.tanh(self.v_fc1(inputs))
         x = F.tanh(self.v_fc2(x))
         v = self.v(x)
-        return mu, sigma_sq, v
+        return mu, log_std, v
 
-    def cum_grads(self):
-        for name, p in self.named_parameters():
-            if p.grad is not None:
-                val = self.__getattr__(name+'_grad')
-                val += p.grad.data
-                self.__setattr__(name+'_grad', val)
+class Shared_grad_buffers():
+    def __init__(self, model):
+        self.grads = {}
+        for name, p in model.named_parameters():
+            self.grads[name+'_grad'] = torch.ones(p.size()).share_memory_()
 
-    def reset_grads(self):
-        self.zero_grad()
-        for name, p in self.named_parameters():
-            if p.grad is not None:
-                val = self.__getattr__(name+'_grad')
-                val = p.grad.data
-                self.__setattr__(name+'_grad', val)
+    def add_gradient(self, model):
+        for name, p in model.named_parameters():
+            self.grads[name+'_grad'] += 10*p.grad.data
 
-    def synchronize(self):
-        for name, p in self.named_parameters():
-            val = self.__getattr__(name+'_grad')
-            p._grad = Variable(val)
+    def reset(self):
+        for name,grad in self.grads.items():
+            self.grads[name].fill_(0)
+
+class Shared_obs_stats():
+    def __init__(self, num_inputs):
+        self.n = torch.zeros(num_inputs).share_memory_()
+        self.mean = torch.zeros(num_inputs).share_memory_()
+        self.mean_diff = torch.zeros(num_inputs).share_memory_()
+        self.var = torch.zeros(num_inputs).share_memory_()
+
+    def observes(self, obs):
+        # observation mean var updates
+        x = obs.data.squeeze()
+        self.n += 1.
+        last_mean = self.mean.clone()
+        self.mean += (x-self.mean)/self.n
+        self.mean_diff += (x-last_mean)*(x-self.mean)
+        self.var = torch.clamp(self.mean_diff/self.n, min=1e-2)
+
+    def normalize(self, inputs):
+        obs_mean = Variable(self.mean.unsqueeze(0).expand_as(inputs))
+        obs_std = Variable(torch.sqrt(self.var).unsqueeze(0).expand_as(inputs))
+        return torch.clamp((inputs-obs_mean)/obs_std, -5., 5.)

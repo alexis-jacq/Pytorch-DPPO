@@ -13,25 +13,28 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 
-from model import Model
+from model import Model, Shared_obs_stats
 
 class Params():
     def __init__(self):
-        self.batch_size = 64
+        self.batch_size = 1000
         self.lr = 3e-4
         self.gamma = 0.99
         self.gae_param = 0.95
         self.clip = 0.2
         self.ent_coeff = 0.
         self.num_epoch = 10
-        self.num_steps = 2048
+        self.num_steps = 1024
         self.time_horizon = 1000000
         self.max_episode_length = 10000
         self.seed = 1
         self.env_name = 'InvertedPendulum-v1'
+        #self.env_name = 'InvertedDoublePendulum-v1'
         #self.env_name = 'Reacher-v1'
         #self.env_name = 'Pendulum-v0'
         #self.env_name = 'Hopper-v1'
+        #self.env_name = 'Ant-v1'
+        #self.env_name = 'HalfCheetah-v1'
 
 class ReplayMemory(object):
     def __init__(self, capacity):
@@ -56,7 +59,7 @@ def normal(x, mu, sigma_sq):
     b = 1/(2*sigma_sq*np.pi).sqrt()
     return a*b
 
-def train(env, model, optimizer):
+def train(env, model, optimizer, shared_obs_stats):
     memory = ReplayMemory(params.num_steps)
     num_inputs = env.observation_space.shape[0]
     num_outputs = env.action_space.shape[0]
@@ -81,6 +84,8 @@ def train(env, model, optimizer):
                 cum_done = 0
                 # n steps loops
                 for step in range(params.num_steps):
+                    shared_obs_stats.observes(state)
+                    state = shared_obs_stats.normalize(state)
                     states.append(state)
                     mu, sigma_sq, v = model(state)
                     eps = torch.randn(mu.size())
@@ -134,10 +139,10 @@ def train(env, model, optimizer):
                 mu, sigma_sq, v_pred = model(batch_states)
                 probs = normal(batch_actions, mu, sigma_sq)
                 # ratio
-                ratio = torch.sum(probs/(1e-5+probs_old),1)
+                ratio = probs/(1e-10+probs_old)
                 # clip loss
-                surr1 = ratio * batch_advantages # surrogate from conservative policy iteration
-                surr2 = surr1.clamp(1-params.clip, 1+params.clip) * batch_advantages
+                surr1 = ratio * torch.cat([batch_advantages]*num_outputs,1) # surrogate from conservative policy iteration
+                surr2 = surr1.clamp(1-params.clip, 1+params.clip) * torch.cat([batch_advantages]*num_outputs,1)
                 loss_clip = -torch.mean(torch.min(surr1, surr2))
                 # value loss
                 vfloss1 = (v_pred - batch_returns)**2
@@ -145,15 +150,20 @@ def train(env, model, optimizer):
                 vfloss2 = (v_pred_clipped - batch_returns)**2
                 loss_value = 0.5*torch.mean(torch.max(vfloss1, vfloss2))
                 # entropy
-                loss_ent = -params.ent_coeff*torch.mean(probs*torch.log(probs+1e-5))
+                loss_ent = 0#-params.ent_coeff*torch.mean(probs*torch.log(probs+1e-5))
                 # total
-                total_loss = loss_clip + loss_value + loss_ent
-                av_loss += total_loss.data[0]/float(params.num_epoch)
+                total_loss = (loss_clip + loss_value + loss_ent)
+                av_loss += loss_value.data[0]/float(params.num_epoch)
                 # before step, update old_model:
                 model_old.load_state_dict(model.state_dict())
                 # step
                 optimizer.zero_grad()
+                #model.zero_grad()
                 total_loss.backward(retain_variables=True)
+                '''
+                for name,param in model.named_parameters():
+                        param.grad.data.clamp_(-1,1)
+                '''
                 optimizer.step()
             # t finish, print:
             print('episode',episode,'av_reward',av_reward/float(cum_done),'av_loss',av_loss)
@@ -176,6 +186,7 @@ if __name__ == '__main__':
     num_outputs = env.action_space.shape[0]
 
     model = Model(num_inputs, num_outputs)
+    shared_obs_stats = Shared_obs_stats(num_inputs)
     optimizer = optim.Adam(model.parameters(), lr=params.lr)
 
-    train(env, model, optimizer)
+    train(env, model, optimizer, shared_obs_stats)
