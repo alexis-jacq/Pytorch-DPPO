@@ -8,8 +8,6 @@ Progress of single PPO with InvertedPendulum-v1:
 Progress of DPPO (4 agents) with InvertedPendulum-v1:
 ![epoch_1900](figs/invpend_dppo.png)
 
-It seems that synchronous updates with 4 agents is slower than a simple single PPO. This is maybe because of a bad choice of hyperparameters in the multi-agent case.
-
 ## Acknowledgments
 The structure of this code is based on https://github.com/ikostrikov/pytorch-a3c.
 
