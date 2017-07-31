@@ -48,7 +48,7 @@ class Shared_grad_buffers():
 
     def add_gradient(self, model):
         for name, p in model.named_parameters():
-            self.grads[name+'_grad'] += 10*p.grad.data
+            self.grads[name+'_grad'] += p.grad.data
 
     def reset(self):
         for name,grad in self.grads.items():
