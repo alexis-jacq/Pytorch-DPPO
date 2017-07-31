@@ -14,7 +14,6 @@ from train import train
 from test import test
 from chief import chief
 from utils import TrafficLight, Counter
-import my_optim
 
 class Params():
     def __init__(self):
