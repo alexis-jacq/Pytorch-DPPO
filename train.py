@@ -148,7 +148,7 @@ def train(rank, params, traffic_light, counter, shared_model, shared_grad_buffer
             ratio = probs/(1e-10+probs_old)
             # clip loss
             surr1 = ratio * torch.cat([batch_advantages]*num_outputs,1) # surrogate from conservative policy iteration
-            surr2 = surr1.clamp(1-params.clip, 1+params.clip) * torch.cat([batch_advantages]*num_outputs,1)
+            surr2 = ratio.clamp(1-params.clip, 1+params.clip) * torch.cat([batch_advantages]*num_outputs,1)
             loss_clip = -torch.mean(torch.min(surr1, surr2))
             # value loss
             vfloss1 = (v_pred - batch_returns)**2
