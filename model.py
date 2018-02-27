@@ -10,13 +10,17 @@ class Model(nn.Module):
         super(Model, self).__init__()
         h_size_1 = 100
         h_size_2 = 100
+
         self.p_fc1 = nn.Linear(num_inputs, h_size_1)
         self.p_fc2 = nn.Linear(h_size_1, h_size_2)
-        self.v_fc1 = nn.Linear(num_inputs, h_size_1)
-        self.v_fc2 = nn.Linear(h_size_1, h_size_2)
+
+        self.v_fc1 = nn.Linear(num_inputs, h_size_1*5)
+        self.v_fc2 = nn.Linear(h_size_1*5, h_size_2)
+
         self.mu = nn.Linear(h_size_2, num_outputs)
-        self.log_std = nn.Parameter(torch.zeros(num_outputs))
+        self.log_std = nn.Parameter(torch.zeros(1, num_outputs))
         self.v = nn.Linear(h_size_2,1)
+
         for name, p in self.named_parameters():
             # init parameters
             if 'bias' in name:
@@ -33,12 +37,12 @@ class Model(nn.Module):
         x = F.tanh(self.p_fc1(inputs))
         x = F.tanh(self.p_fc2(x))
         mu = self.mu(x)
-        log_std = torch.exp(self.log_std).unsqueeze(0).expand_as(mu)
+        sigma_sq = torch.exp(self.log_std)
         # critic
         x = F.tanh(self.v_fc1(inputs))
         x = F.tanh(self.v_fc2(x))
         v = self.v(x)
-        return mu, log_std, v
+        return mu, sigma_sq, v
 
 class Shared_grad_buffers():
     def __init__(self, model):

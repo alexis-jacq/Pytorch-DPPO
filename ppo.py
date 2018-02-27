@@ -5,6 +5,8 @@ import gym
 from gym import wrappers
 import random
 import numpy as np
+import math
+import pybullet_envs
 
 import torch
 import torch.optim as optim
@@ -18,21 +20,23 @@ from model import Model, Shared_obs_stats
 class Params():
     def __init__(self):
         self.batch_size = 64
-        self.lr = 3e-4
+        self.lr = 7e-4
         self.gamma = 0.99
         self.gae_param = 0.95
         self.clip = 0.2
-        self.ent_coeff = 0.
+        self.ent_coeff = 0.01
         self.num_epoch = 10
         self.num_steps = 2048
         self.time_horizon = 1000000
         self.max_episode_length = 10000
+        self.max_grad_norm = 0.5
         self.seed = 1
         #self.env_name = 'InvertedPendulum-v1'
-        self.env_name = 'InvertedDoublePendulum-v1'
+        #self.env_name = 'InvertedDoublePendulum-v1'
         #self.env_name = 'Reacher-v1'
         #self.env_name = 'Pendulum-v0'
-        #self.env_name = 'Hopper-v1'
+        self.env_name = 'HalfCheetahBulletEnv-v0'
+        #self.env_name = 'HopperBulletEnv-v0'#'Hopper-v1'
         #self.env_name = 'Ant-v1'
         #self.env_name = 'HalfCheetah-v1'
 
@@ -77,6 +81,7 @@ def train(env, model, optimizer, shared_obs_stats):
             values = []
             returns = []
             advantages = []
+            logprobs = []
             av_reward = 0
             cum_reward = 0
             cum_done = 0
@@ -87,9 +92,15 @@ def train(env, model, optimizer, shared_obs_stats):
                 state = shared_obs_stats.normalize(state)
                 states.append(state)
                 mu, sigma_sq, v = model(state)
-                eps = torch.randn(mu.size())
-                action = (mu + sigma_sq.sqrt()*Variable(eps))
+                # action
+                action = (mu + sigma_sq*Variable(torch.randn(mu.size())))
                 actions.append(action)
+                # logprob
+                log_std = model.log_std
+                log_prob = -0.5 * ((action - mu) / sigma_sq).pow(2) - 0.5 * math.log(2 * math.pi) - log_std
+                log_prob = log_prob.sum(-1, keepdim=True)
+                logprobs.append(log_prob)
+                # value
                 values.append(v)
                 env_action = action.data.squeeze().numpy()
                 state, reward, done, _ = env.step(env_action)
@@ -123,44 +134,72 @@ def train(env, model, optimizer, shared_obs_stats):
                 R = A + values[i]
                 returns.insert(0, R)
             # store usefull info:
-            memory.push([states, actions, returns, advantages])
+            memory.push([states, actions, returns, advantages, logprobs])
         # epochs
         model_old = Model(num_inputs, num_outputs)
         model_old.load_state_dict(model.state_dict())
         av_loss = 0
+        last_loss = None
         for k in range(params.num_epoch):
             # cf https://github.com/openai/baselines/blob/master/baselines/pposgd/pposgd_simple.py
-            batch_states, batch_actions, batch_returns, batch_advantages = memory.sample(params.batch_size)
-            # old probas
-            mu_old, sigma_sq_old, v_pred_old = model_old(batch_states.detach())
-            probs_old = normal(batch_actions, mu_old, sigma_sq_old)
+            batch_states, batch_actions, batch_returns, batch_advantages, batch_logprobs = memory.sample(params.batch_size)
+
+            batch_actions = Variable(batch_actions.data, requires_grad=False)
+            batch_states = Variable(batch_states.data, requires_grad=False)
+            batch_returns = Variable(batch_returns.data, requires_grad=False)
+            batch_advantages = Variable(batch_advantages.data, requires_grad=False)
+            batch_logprobs = Variable(batch_logprobs.data, requires_grad=False)
+
             # new probas
             mu, sigma_sq, v_pred = model(batch_states)
-            probs = normal(batch_actions, mu, sigma_sq)
+            log_std = model.log_std
+            log_probs = -0.5 * ((batch_actions - mu) / sigma_sq).pow(2) - 0.5 * math.log(2 * math.pi) - log_std
+            log_probs = log_probs.sum(-1, keepdim=True)
+            dist_entropy = 0.5 + 0.5 * math.log(2 * math.pi) + log_std
+            dist_entropy = dist_entropy.sum(-1).mean()
+
             # ratio
-            ratio = probs/(1e-15+probs_old)
+            ratio = torch.exp(log_probs - batch_logprobs)
+
             # clip loss
-            surr1 = ratio * torch.cat([batch_advantages]*num_outputs,1) # surrogate from conservative policy iteration
-            surr2 = ratio.clamp(1-params.clip, 1+params.clip) * torch.cat([batch_advantages]*num_outputs,1)
+            surr1 = ratio * batch_advantages.expand_as(ratio) # surrogate from conservative policy iteration
+            surr2 = ratio.clamp(1-params.clip, 1+params.clip) * batch_advantages.expand_as(ratio)
             loss_clip = -torch.mean(torch.min(surr1, surr2))
+
             # value loss
-            vfloss1 = (v_pred - batch_returns)**2
-            v_pred_clipped = v_pred_old + (v_pred - v_pred_old).clamp(-params.clip, params.clip)
-            vfloss2 = (v_pred_clipped - batch_returns)**2
-            loss_value = 0.5*torch.mean(torch.max(vfloss1, vfloss2)) # also clip value loss
+            loss_value = (v_pred - batch_returns).pow(2).mean()
+
+            #v_pred_clipped = v_pred_old + (v_pred - v_pred_old).clamp(-params.clip, params.clip)
+            #vfloss2 = (v_pred_clipped - batch_returns)**2
+            #loss_value = 0.5*torch.mean(torch.max(vfloss1, vfloss2)) # also clip value loss
+
             # entropy
-            loss_ent = -params.ent_coeff*torch.mean(probs*torch.log(probs+1e-5))
+            loss_ent = - params.ent_coeff * dist_entropy
             # total
             total_loss = (loss_clip + loss_value + loss_ent)
-            av_loss += total_loss.data[0]/float(params.num_epoch)
+
             # before Adam step, update old_model:
             ''' not sure about this '''
-            model_old.load_state_dict(model.state_dict())
-            # step
+            #model_old.load_state_dict(model.state_dict())
+
+            '''
+            if last_loss is None or last_loss - total_loss.data[0] < 1.:
+                # step
+                model.zero_grad()
+                #model.zero_grad()
+                total_loss.backward(retain_variables=True)
+                optimizer.step()
+
+            last_loss = total_loss.data[0]
+            '''
             optimizer.zero_grad()
-            #model.zero_grad()
-            total_loss.backward(retain_variables=True)
+            total_loss.backward()
+            nn.utils.clip_grad_norm(model.parameters(), params.max_grad_norm)
             optimizer.step()
+            last_loss = total_loss.data[0]
+
+            av_loss += total_loss.data[0]/float(params.num_epoch)
+
         # finish, print:
         print('episode',episode,'av_reward',av_reward/float(cum_done),'av_loss',av_loss)
         memory.clear()
