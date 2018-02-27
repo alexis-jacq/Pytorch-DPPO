@@ -8,10 +8,24 @@ On the following example I was not patient enough to wait for million iterations
 
 Progress of single PPO:
 -----------------------
+InvertedPendulum
+
 ![InvertedPendulum](figs/invertpendulum.png)
+
+InvertedDoublePendulum
+
 ![InvertedDoublePendulum](figs/inverteddouble.png)
+
+HalfCheetah
+
 ![HalfCheetah](figs/halfcheetah.png)
+
+hopper (PyBullet)
+
 ![hopper (PyBullet)](figs/hopper_bullet.png)
+
+halfcheetah (PyBullet)
+
 ![halfcheetah (PyBullet)](figs/halfcheetah_bullet.png)
 
 Progress of DPPO (4 agents) [TODO]
